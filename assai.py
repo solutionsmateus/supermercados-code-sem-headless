@@ -1,27 +1,21 @@
-# assai.py — pronto para rodar em headless no GitHub Actions e salvar em OUTPUT_DIR
-
+import os
 import time
+import re
 import requests
+import unicodedata
 from pathlib import Path
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.options import Options
-from datetime import datetime
-import re
-import os
-import sys
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException, UnexpectedAlertPresentException
 
-# =========================
-# CONFIGURAÇÕES / CONSTANTES
-# =========================
-
-# Lê OUTPUT_DIR do ambiente (setado no YAML). Se não existir, usa ./Encartes
-OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", str(Path.cwd() / "Encartes"))).resolve()
+# --- Configuração de Saída ---
+OUTPUT_DIR = Path(os.environ.get("GITHUB_WORKSPACE", "Encartes_Assai")).resolve()
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+print(f"[INFO] Pasta de saída configurada para: {OUTPUT_DIR}")
 
-# Mapeamento Estado -> NOME DA LOJA
+# --- Mapeamentos ---
 LOJAS_ESTADOS = {
     "Maranhão": "Assaí Angelim",
     "Alagoas": "Assaí Maceió Farol",
@@ -31,232 +25,289 @@ LOJAS_ESTADOS = {
     "Pernambuco": "Assaí Avenida Recife",
     "Piauí": "Assaí Teresina",
     "Sergipe": "Assaí Aracaju",
-    "Bahia": "Assaí Vitória da Conquista",  # CHANGE
+    "Bahia": "Assaí Vitória da Conquista",
 }
-
-# Região preferida por estado (quando existir select.regiao)
-REGIAO_POR_ESTADO = {
-    "Bahia": "Interior",  # CHANGE
-}
-
+REGIAO_POR_ESTADO = {"Bahia": "Interior"}
 BASE_URL = "https://www.assai.com.br/ofertas"
 
-# =========================
-# DRIVER HEADLESS
-# =========================
+# --- Funções Auxiliares ---
+def strip_accents(s: str) -> str:
+    """Remove acentos e normaliza o texto para comparação."""
+    if not s:
+        return ""
+    return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn").lower().strip()
 
-def build_headless_driver() -> webdriver.Chrome:
-    """
-    Cria o Chrome em modo headless estável para CI/CD (GitHub Actions).
-    Selenium Manager resolve o ChromeDriver automaticamente.
-    """
-    chrome_opts = Options()
-    chrome_opts.add_argument("--headless=new")     # headless moderno
-    chrome_opts.add_argument("--disable-gpu")
-    chrome_opts.add_argument("--no-sandbox")
-    chrome_opts.add_argument("--disable-dev-shm-usage")
-    chrome_opts.add_argument("--window-size=1920,1080")
-    chrome_opts.add_argument("--disable-extensions")
-    chrome_opts.add_argument("--disable-notifications")
-    chrome_opts.add_argument("--start-maximized")  # mantém layout amplo
-    # (Downloads via browser não são usados; salvamos via requests)
-
-    # Instancia o driver (Selenium 4+ com Selenium Manager)
-    return webdriver.Chrome(options=chrome_opts)
-
-# =========================
-# HELPERS
-# =========================
-
-def encontrar_data(driver: webdriver.Chrome) -> str:
+def click_robusto(driver, element) -> bool:
+    """Tenta clicar em um elemento de forma robusta, usando JavaScript como fallback."""
     try:
-        enc_data = WebDriverWait(driver, 10).until(
-            EC.presence_of_all_elements_located((By.XPATH, '//div[contains(@class, "ofertas-tab-validade")]'))
-        )
-    except Exception:
-        return "sem_data"
-
-    for div in enc_data:
-        texto = div.text.strip()
-        if texto:
-            nome_pasta = re.sub(r'[\\/*?:"<>|\s]', '_', texto)
-            return nome_pasta
-    return "sem_data"
-
-def aguardar_elemento(driver: webdriver.Chrome, seletor, by=By.CSS_SELECTOR, timeout=15):
-    return WebDriverWait(driver, timeout).until(EC.presence_of_element_located((by, seletor)))
-
-def clicar_elemento(driver: webdriver.Chrome, seletor, by=By.CSS_SELECTOR):
-    element = WebDriverWait(driver, 45).until(EC.element_to_be_clickable((by, seletor)))
-    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
-    time.sleep(0.5)
-    element.click()
-
-def scroll_down_and_up(driver: webdriver.Chrome):
-    driver.execute_script("window.scrollTo(0, document.body.scrollHeight/3);")
-    time.sleep(0.5)
-    driver.execute_script("window.scrollTo(0, 1);")
-    time.sleep(0.5)
-
-def baixar_encartes(driver: webdriver.Chrome, wait: WebDriverWait, jornal_num: int, download_dir: Path):
-    page_num = 1
-    downloaded_urls = set()
-    while True:
-        print(f"  Baixando página {page_num} do jornal {jornal_num}...")
-        links_download = wait.until(
-            EC.presence_of_all_elements_located(
-                (By.XPATH, "//a[contains(@class, 'download') and contains(@href, '.jpeg')]")
-            )
-        )
-        current_page_urls = []
-        for link in links_download:
-            url = link.get_attribute("href")
-            if url and url not in downloaded_urls:
-                current_page_urls.append(url)
-                downloaded_urls.add(url)
-
-        # Se não encontrou URLs novas e já passou da primeira página, encerra
-        if not current_page_urls and page_num > 1:
-            break
-
-        for idx, url in enumerate(current_page_urls, start=1):
-            try:
-                response = requests.get(url, timeout=60)
-                if response.status_code == 200:
-                    file_path = download_dir / f"encarte_jornal_{jornal_num}_pagina_{page_num}_{idx}_{int(time.time())}.jpg"
-                    with open(file_path, "wb") as f:
-                        f.write(response.content)
-                    print(f"  Encarte {file_path.name} salvo.")
-                else:
-                    print(f"Falha no download: {url} (Status: {response.status_code})")
-            except Exception as e:
-                print(f"Erro no download: {url} — {e}")
-
-        # Tenta ir para a próxima página do carrossel
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'nearest'});", element)
+        time.sleep(0.3) # Pequena pausa para a rolagem acontecer
+        element.click()
+        return True
+    except StaleElementReferenceException:
+        print("[AVISO] StaleElementReferenceException ao clicar. Tentando novamente...")
+        time.sleep(1) # Espera e tenta novamente
         try:
-            next_button = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button.slick-next")))
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", next_button)
-            time.sleep(0.5)
-            next_button.click()
-            time.sleep(2)
-            page_num += 1
-        except Exception:
-            break
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'nearest'});", element)
+            time.sleep(0.3)
+            element.click()
+            return True
+        except Exception as e:
+            print(f"[AVISO] Falha persistente ao clicar no elemento após StaleElement: {e}")
+            return False
+    except Exception:
+        try:
+            driver.execute_script("arguments[0].click();", element)
+            return True
+        except Exception as e:
+            print(f"[AVISO] Falha ao clicar no elemento: {e}")
+            return False
 
-def select_by_visible_text_contains(driver: webdriver.Chrome, select_el, target_text, timeout=10):
-    WebDriverWait(driver, timeout).until(lambda d: len(select_el.find_elements(By.TAG_NAME, "option")) > 0)
-    sel = Select(select_el)
-    opts = select_el.find_elements(By.TAG_NAME, "option")
-    alvo_norm = target_text.strip().lower()
-    for o in opts:
-        if alvo_norm in o.text.strip().lower():
-            sel.select_by_visible_text(o.text)
+def select_contains_noaccent(select_el, target_text: str, wait_time=10) -> bool:
+    """Seleciona uma opção em um <select> comparando o texto sem acentos."""
+    # Espera até que as opções sejam carregadas no select
+    WebDriverWait(select_el.parent, wait_time).until(lambda d: len(select_el.find_elements(By.TAG_NAME, "option")) > 1)
+    alvo_normalizado = strip_accents(target_text)
+    for option in select_el.find_elements(By.TAG_NAME, "option"):
+        if alvo_normalizado in strip_accents(option.text):
+            Select(select_el).select_by_visible_text(option.text)
             return True
     return False
 
-# =========================
-# MAIN
-# =========================
-
-def main():
-    driver = build_headless_driver()
-    wait = WebDriverWait(driver, 45)
-
+def encontrar_data_validade(driver) -> str:
+    """Extrai a data de validade das ofertas para nomear a pasta."""
     try:
-        driver.get(BASE_URL)
-        time.sleep(2)
+        div_validade = WebDriverWait(driver, 10).until(
+            EC.visibility_of_element_located((By.XPATH, '//div[contains(@class, "ofertas-tab-validade")]'))
+        )
+        texto = div_validade.text.strip()
+        if texto:
+            return re.sub(r'[\\/*?:"<>|\s]+', '_', texto)
+    except Exception:
+        pass
+    return "sem_data"
 
-        # Fecha eventual popup de cookies
+def get_current_slide_image_url(driver, wait) -> str:
+    """Tenta obter a URL da imagem do slide ativo com várias tentativas e esperas."""
+    for attempt in range(5): # Aumenta as tentativas
         try:
-            clicar_elemento(driver, "button.ot-close-icon")
-        except Exception:
-            pass
+            # Procura pela tag <img> dentro do slide ativo que tenha um src válido
+            # Adiciona uma espera para o elemento ser visível e ter um atributo src
+            img_element = wait.until(EC.visibility_of_element_located(
+                (By.XPATH, "//div[contains(@class, 'slick-active')]//img[contains(@src, 'assai.com.br')]")
+            ))
+            src = img_element.get_attribute("src")
+            if src and src.startswith("http"):
+                return src
+            else:
+                print(f"  [DEBUG] Tentativa {attempt+1}: SRC da imagem inválido ou vazio: {src}")
+        except (TimeoutException, NoSuchElementException) as e:
+            print(f"  [DEBUG] Tentativa {attempt+1}: Erro ao encontrar imagem do slide ({type(e).__name__})... Tentando novamente.")
+        except StaleElementReferenceException:
+            print(f"  [DEBUG] Tentativa {attempt+1}: StaleElementReferenceException ao obter imagem do slide. Re-tentando.")
+        time.sleep(1) # Pequena pausa antes de tentar novamente
+    return ""
 
-        clicar_elemento(driver, "a.seletor-loja")
-        time.sleep(1)
+def baixar_encartes_do_jornal(driver, wait, jornal_num: int, download_dir: Path):
+    """Baixa todas as páginas de um jornal de ofertas específico."""
+    download_dir.mkdir(parents=True, exist_ok=True)
+    urls_ja_baixadas = set()
+    MAX_PAGES = 30 # Limite de segurança para evitar loops infinitos
 
-        for estado, loja in LOJAS_ESTADOS.items():
-            print(f" Processando: {estado} - {loja}")
+    for page_num in range(1, MAX_PAGES + 1):
+        try:
+            url = get_current_slide_image_url(driver, wait)
+            if not url:
+                print(f"  [Jornal {jornal_num}] URL da imagem não encontrada no slide {page_num}. Finalizando.")
+                break
 
-            estado_select = aguardar_elemento(driver, "select.estado")
-            Select(estado_select).select_by_visible_text(estado)
-            time.sleep(1)
+            if url in urls_ja_baixadas:
+                print(f"  [Jornal {jornal_num}] Página repetida detectada ({url}). Finalizando este jornal.")
+                break
+            
+            print(f"  [Jornal {jornal_num}] Baixando página {page_num}: {url}")
+            response = requests.get(url, timeout=30, headers={
+                'Referer': BASE_URL,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            })
+            if response.status_code == 200:
+                nome_base = os.path.basename(url).split("?")[0]
+                nome_arquivo = f"jornal_{jornal_num}_pagina_{page_num}_{nome_base}"
+                filepath = download_dir / nome_arquivo
+                with open(filepath, "wb") as f:
+                    f.write(response.content)
+                urls_ja_baixadas.add(url)
+            else:
+                print(f"  [ERRO] Falha no download de {url} (Status: {response.status_code})")
 
-            # Se houver seletor de região para o estado, seleciona
+            # Tenta avançar para a próxima imagem
+            next_button = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button.slick-next")))
+            if "slick-disabled" in next_button.get_attribute("class"):
+                print(f"  [Jornal {jornal_num}] Botão 'próximo' desabilitado. Fim do jornal.")
+                break
+            
+            prev_url = url # Guarda a URL atual para verificar a mudança
+            click_robusto(driver, next_button)
+            
+            # Espera a URL da imagem mudar, garantindo que o carrossel avançou
+            try:
+                # Aumenta o timeout para a mudança de slide
+                WebDriverWait(driver, 15).until(lambda d: get_current_slide_image_url(d, wait) != prev_url)
+                time.sleep(0.8) # Pequena pausa adicional para renderização
+            except TimeoutException:
+                print(f"  [Jornal {jornal_num}] Slide não mudou após clicar em 'próximo' dentro do tempo limite. Fim do jornal.")
+                break
+
+        except Exception as e:
+            print(f"  [Jornal {jornal_num}] Não foi possível encontrar mais páginas ou ocorreu um erro: {type(e).__name__} - {e}. Finalizando.")
+            break
+
+# --- Configuração do WebDriver ---
+def build_headless_chrome():
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless=new")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--lang=pt-BR")
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    # Adiciona o caminho do chromedriver explicitamente
+    # No ambiente do GitHub Actions, o chromedriver é instalado em /usr/bin/chromium-chromedriver
+    # ou /usr/lib/chromium-browser/chromedriver
+    service = webdriver.ChromeService(executable_path="/usr/bin/chromium-chromedriver")
+    return webdriver.Chrome(options=options, service=service)
+
+# --- Execução Principal ---
+driver = None
+try:
+    driver = build_headless_chrome()
+    wait = WebDriverWait(driver, 30) # Aumentado o tempo de espera padrão para 30s
+
+    print("[INFO] Acessando a página de ofertas...")
+    driver.get(BASE_URL)
+
+    # --- Lidar com o modal de seleção de loja primeiro ---
+    try:
+        # Espera o modal de seleção de loja aparecer
+        wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "div.modal-loja")))
+        print("[INFO] Modal de seleção de loja aberto.")
+
+        # Clica no seletor de loja para abrir o modal (se ainda não estiver aberto ou para reabrir)
+        # wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a.seletor-loja"))).click()
+        # time.sleep(1.5) # Pequena pausa para o modal abrir completamente e elementos carregarem
+
+    except TimeoutException:
+        print("[INFO] Modal de seleção de loja não apareceu automaticamente.")
+        # Se o modal não apareceu, tenta clicar no seletor de loja
+        try:
+            wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a.seletor-loja"))).click()
+            time.sleep(1.5)
+            print("[INFO] Modal de seleção de loja aberto via clique.")
+        except Exception as e:
+            print(f"[AVISO] Não foi possível abrir o modal de seleção de loja: {e}")
+
+    # --- Processar lojas ---
+    for estado, loja_alvo in LOJAS_ESTADOS.items():
+        print(f"\n--- Processando Estado: {estado}, Loja: {loja_alvo} ---")
+        
+        try:
+            # Seleciona o Estado
+            select_estado_el = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "select.estado")))
+            if not select_contains_noaccent(select_estado_el, estado, wait_time=15): # Aumenta espera para o select
+                print(f"  [ERRO] Estado \'{estado}\' não encontrado. Pulando.")
+                # Tenta fechar o modal de seleção de loja antes de continuar para o próximo estado
+                try:
+                    driver.find_element(By.CSS_SELECTOR, "button[title='Close']").click()
+                except NoSuchElementException:
+                    pass
+                continue
+            time.sleep(1.5) # Espera carregar regiões/lojas
+
+            # Seleciona a Região (se aplicável)
             if estado in REGIAO_POR_ESTADO:
                 try:
-                    regiao_select_element = aguardar_elemento(driver, "select.regiao", timeout=15)
-                    Select(regiao_select_element).select_by_visible_text(REGIAO_POR_ESTADO[estado])
-                    aguardar_elemento(driver, "select.loja option[value]", timeout=20)
-                    time.sleep(0.5)
-                except Exception as e:
-                    print(f" Não foi possível selecionar a região para {estado}: {e}")
+                    select_regiao_el = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "select.regiao")))
+                    if not select_contains_noaccent(select_regiao_el, REGIAO_POR_ESTADO[estado], wait_time=15):
+                        print(f"  [AVISO] Região \'{REGIAO_POR_ESTADO[estado]}\' não encontrada para {estado}.")
+                    time.sleep(1.5) # Espera carregar lojas da região
+                except TimeoutException:
+                    print(f"  [AVISO] Seletor de região não apareceu para {estado} dentro do tempo limite.")
+                except Exception:
+                    print(f"  [AVISO] Erro ao tentar selecionar região para {estado}.")
 
-            # Seleciona a loja (exato ou contém)
-            loja_select = aguardar_elemento(driver, "select.loja", timeout=20)
+            # Seleciona a Loja
+            select_loja_el = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "select.loja")))
+            if not select_contains_noaccent(select_loja_el, loja_alvo, wait_time=15):
+                print(f"  [ERRO] Loja \'{loja_alvo}\' não encontrada. Pulando.")
+                # Tenta fechar o modal de seleção de loja antes de continuar para o próximo estado
+                try:
+                    driver.find_element(By.CSS_SELECTOR, "button[title='Close']").click()
+                except NoSuchElementException:
+                    pass
+                continue
+            
+            # Confirma a seleção
+            wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button.confirmar"))).click()
+            print(f"  [INFO] Loja \'{loja_alvo}\' selecionada.")
+
+            # --- Lidar com o pop-up de cookies APÓS a seleção da loja ---
             try:
-                Select(loja_select).select_by_visible_text(loja)
-            except Exception:
-                ok = select_by_visible_text_contains(driver, loja_select, loja)
-                if not ok:
-                    raise RuntimeError(f"Não encontrei a loja '{loja}' no estado {estado}")
+                # Tenta o seletor que funcionou na navegação manual
+                botao_aceitar_todos = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Aceitar Todos')]")))
+                click_robusto(driver, botao_aceitar_todos)
+                print("[INFO] Pop-up de cookies fechado (Aceitar Todos). ")
+            except TimeoutException:
+                try:
+                    # Tenta o ID, caso o texto mude ou seja outro botão
+                    botao_fechar_cookies = wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler")))
+                    click_robusto(driver, botao_fechar_cookies)
+                    print("[INFO] Pop-up de cookies fechado (ID). ")
+                except Exception:
+                    print("[INFO] Pop-up de cookies não encontrado ou não clicável.")
 
-            time.sleep(0.8)
+            # Aguarda o carregamento das ofertas e baixa os encartes
+            wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "div.ofertas-slider")))
+            data_validade = encontrar_data_validade(driver)
+            nome_loja_limpo = re.sub(r'[^a-zA-Z0-9_]+', '', loja_alvo.replace(" ", "_"))
+            pasta_final = OUTPUT_DIR / f"Assai_{nome_loja_limpo}_{data_validade}"
+            
+            print(f"  [INFO] Salvando encartes em: {pasta_final}")
 
-            clicar_elemento(driver, "button.confirmar")
-            time.sleep(1)
+            # Baixa o primeiro jornal de ofertas
+            baixar_encartes_do_jornal(driver, wait, 1, pasta_final)
 
-            aguardar_elemento(driver, "div.ofertas-slider", timeout=45)
-            data_nome = encontrar_data(driver)
-
-            nome_loja = loja.replace(' ', '_').replace('(', '').replace(')', '')
-            download_dir = OUTPUT_DIR / f"ASSAI_encartes_{nome_loja}_{data_nome}"
-            download_dir.mkdir(parents=True, exist_ok=True)
-
-            # Jornal 1
-            scroll_down_and_up(driver)
-            baixar_encartes(driver, wait, 1, download_dir)
-
-            # Tenta Jornal 2 e 3
+            # Tenta encontrar e baixar outros jornais
             for i in range(2, 4):
                 try:
-                    clicar_elemento(driver, f"//button[contains(., 'Jornal de Ofertas {i}')]", By.XPATH)
-                    time.sleep(3)
-                    aguardar_elemento(driver, "div.ofertas-slider", timeout=45)
-                    scroll_down_and_up(driver)
-                    baixar_encartes(driver, wait, i, download_dir)
+                    # Clica na aba do próximo jornal
+                    # Aumenta o timeout para encontrar o botão do jornal
+                    botao_jornal = wait.until(EC.element_to_be_clickable((By.XPATH, f"//button[contains(., 'Jornal de Ofertas {i}')]")))
+                    click_robusto(driver, botao_jornal)
+                    print(f"\n[INFO] Trocando para o Jornal de Ofertas {i}")
+                    time.sleep(2.5) # Espera o novo conteúdo carregar, aumentado
+                    wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "div.ofertas-slider")))
+                    baixar_encartes_do_jornal(driver, wait, i, pasta_final)
+                except TimeoutException:
+                    print(f"  [INFO] Jornal de Ofertas {i} não encontrado ou não carregou a tempo para esta loja. Pulando para o próximo estado.")
+                    break # Se não achou o 2, provavelmente não terá o 3
                 except Exception as e:
-                    print(f" Jornal {i} indisponível para {loja}: {str(e)}")
+                    print(f"  [INFO] Erro ao tentar acessar Jornal de Ofertas {i} para esta loja: {type(e).__name__} - {e}. Pulando para o próximo estado.")
+                    break
 
-            # Volta para o seletor de loja para próximo estado
-            clicar_elemento(driver, "a.seletor-loja")
-            time.sleep(2)
+        except Exception as e:
+            print(f"  [ERRO GRAVE] Ocorreu um erro inesperado ao processar \'{loja_alvo}\': {type(e).__name__} - {e}")
+            screenshot_path = OUTPUT_DIR / f"erro_{estado}_{loja_alvo}.png"
+            driver.save_screenshot(str(screenshot_path))
+            print(f"  [DEBUG] Screenshot de erro salvo em: {screenshot_path}")
+            # Tenta fechar o modal de seleção de loja se ele estiver aberto
+            try:
+                driver.find_element(By.CSS_SELECTOR, "button[title='Close']").click()
+            except NoSuchElementException:
+                pass
 
-        print("Todos os encartes foram processados!")
+finally:
+    if driver:
+        driver.quit()
+    print("\n[INFO] Processo finalizado.")
 
-    except Exception as e:
-        print(f"Erro crítico: {str(e)}")
-        # Salva screenshot de erro dentro do OUTPUT_DIR (para ir como artefato)
-        try:
-            err_shot = OUTPUT_DIR / "erro_encartes_assai.png"
-            driver.save_screenshot(str(err_shot))
-            print(f"Screenshot de erro salvo em: {err_shot}")
-        except Exception as se:
-            print(f"Falha ao salvar screenshot: {se}")
-
-        # também salva um log simples
-        try:
-            (OUTPUT_DIR / "erro_encartes_assai.log").write_text(f"{datetime.now()}: {e}\n", encoding="utf-8")
-        except Exception:
-            pass
-        # Retorna código de erro para o job acusar falha (opcional; se preferir continuar, comente)
-        # sys.exit(1)
-
-    finally:
-        try:
-            driver.quit()
-        except Exception:
-            pass
-
-if __name__ == "__main__":
-    main()
