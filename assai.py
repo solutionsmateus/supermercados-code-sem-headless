@@ -1,3 +1,5 @@
+# assai.py — pronto para rodar em headless no GitHub Actions e salvar em OUTPUT_DIR
+
 import time
 import requests
 from pathlib import Path
@@ -5,11 +7,21 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
 from datetime import datetime
 import re
 import os
+import sys
 
-# CHANGE: Ajuste do mapeamento da Bahia para o NOME DA LOJA (e não a região)
+# =========================
+# CONFIGURAÇÕES / CONSTANTES
+# =========================
+
+# Lê OUTPUT_DIR do ambiente (setado no YAML). Se não existir, usa ./Encartes
+OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", str(Path.cwd() / "Encartes"))).resolve()
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# Mapeamento Estado -> NOME DA LOJA
 LOJAS_ESTADOS = {
     "Maranhão": "Assaí Angelim",
     "Alagoas": "Assaí Maceió Farol",
@@ -22,27 +34,48 @@ LOJAS_ESTADOS = {
     "Bahia": "Assaí Vitória da Conquista",  # CHANGE
 }
 
-# CHANGE: Região preferida por estado (usado quando existe select.regiao)
+# Região preferida por estado (quando existir select.regiao)
 REGIAO_POR_ESTADO = {
-    "Bahia": "Interior",  # CHANGE: explicitamos a região para BA
+    "Bahia": "Interior",  # CHANGE
 }
 
 BASE_URL = "https://www.assai.com.br/ofertas"
-desktop_path = Path.home() / "Desktop/Encartes-Concorrentes/Assai"
 
-options = webdriver.ChromeOptions()
-options.add_argument("--start-maximized")
-driver = webdriver.Chrome(options=options)
-wait = WebDriverWait(driver, 30)
+# =========================
+# DRIVER HEADLESS
+# =========================
 
-def encontrar_data():
+def build_headless_driver() -> webdriver.Chrome:
+    """
+    Cria o Chrome em modo headless estável para CI/CD (GitHub Actions).
+    Selenium Manager resolve o ChromeDriver automaticamente.
+    """
+    chrome_opts = Options()
+    chrome_opts.add_argument("--headless=new")     # headless moderno
+    chrome_opts.add_argument("--disable-gpu")
+    chrome_opts.add_argument("--no-sandbox")
+    chrome_opts.add_argument("--disable-dev-shm-usage")
+    chrome_opts.add_argument("--window-size=1920,1080")
+    chrome_opts.add_argument("--disable-extensions")
+    chrome_opts.add_argument("--disable-notifications")
+    chrome_opts.add_argument("--start-maximized")  # mantém layout amplo
+    # (Downloads via browser não são usados; salvamos via requests)
+
+    # Instancia o driver (Selenium 4+ com Selenium Manager)
+    return webdriver.Chrome(options=chrome_opts)
+
+# =========================
+# HELPERS
+# =========================
+
+def encontrar_data(driver: webdriver.Chrome) -> str:
     try:
         enc_data = WebDriverWait(driver, 10).until(
             EC.presence_of_all_elements_located((By.XPATH, '//div[contains(@class, "ofertas-tab-validade")]'))
         )
-    except:
+    except Exception:
         return "sem_data"
-    
+
     for div in enc_data:
         texto = div.text.strip()
         if texto:
@@ -50,22 +83,22 @@ def encontrar_data():
             return nome_pasta
     return "sem_data"
 
-def aguardar_elemento(seletor, by=By.CSS_SELECTOR, timeout=15):
+def aguardar_elemento(driver: webdriver.Chrome, seletor, by=By.CSS_SELECTOR, timeout=15):
     return WebDriverWait(driver, timeout).until(EC.presence_of_element_located((by, seletor)))
 
-def clicar_elemento(seletor, by=By.CSS_SELECTOR):
-    element = wait.until(EC.element_to_be_clickable((by, seletor)))
+def clicar_elemento(driver: webdriver.Chrome, seletor, by=By.CSS_SELECTOR):
+    element = WebDriverWait(driver, 30).until(EC.element_to_be_clickable((by, seletor)))
     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
     time.sleep(0.5)
     element.click()
 
-def scroll_down_and_up():
+def scroll_down_and_up(driver: webdriver.Chrome):
     driver.execute_script("window.scrollTo(0, document.body.scrollHeight/3);")
     time.sleep(0.5)
     driver.execute_script("window.scrollTo(0, 1);")
     time.sleep(0.5)
 
-def baixar_encartes(jornal_num, download_dir):
+def baixar_encartes(driver: webdriver.Chrome, wait: WebDriverWait, jornal_num: int, download_dir: Path):
     page_num = 1
     downloaded_urls = set()
     while True:
@@ -82,19 +115,24 @@ def baixar_encartes(jornal_num, download_dir):
                 current_page_urls.append(url)
                 downloaded_urls.add(url)
 
+        # Se não encontrou URLs novas e já passou da primeira página, encerra
         if not current_page_urls and page_num > 1:
             break
 
         for idx, url in enumerate(current_page_urls, start=1):
-            response = requests.get(url)
-            if response.status_code == 200:
-                file_path = download_dir / f"encarte_jornal_{jornal_num}_pagina_{page_num}_{idx}_{int(time.time())}.jpg"
-                with open(file_path, "wb") as f:
-                    f.write(response.content)
-                print(f"  Encarte {file_path.name} salvo.")
-            else:
-                print(f"Falha no download: {url} (Status: {response.status_code})")
+            try:
+                response = requests.get(url, timeout=60)
+                if response.status_code == 200:
+                    file_path = download_dir / f"encarte_jornal_{jornal_num}_pagina_{page_num}_{idx}_{int(time.time())}.jpg"
+                    with open(file_path, "wb") as f:
+                        f.write(response.content)
+                    print(f"  Encarte {file_path.name} salvo.")
+                else:
+                    print(f"Falha no download: {url} (Status: {response.status_code})")
+            except Exception as e:
+                print(f"Erro no download: {url} — {e}")
 
+        # Tenta ir para a próxima página do carrossel
         try:
             next_button = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button.slick-next")))
             driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", next_button)
@@ -102,11 +140,10 @@ def baixar_encartes(jornal_num, download_dir):
             next_button.click()
             time.sleep(2)
             page_num += 1
-        except:
+        except Exception:
             break
 
-# CHANGE: helper para selecionar por "contém texto" (robusto contra variações de acento/espaço)
-def select_by_visible_text_contains(select_el, target_text, timeout=10):
+def select_by_visible_text_contains(driver: webdriver.Chrome, select_el, target_text, timeout=10):
     WebDriverWait(driver, timeout).until(lambda d: len(select_el.find_elements(By.TAG_NAME, "option")) > 0)
     sel = Select(select_el)
     opts = select_el.find_elements(By.TAG_NAME, "option")
@@ -117,79 +154,109 @@ def select_by_visible_text_contains(select_el, target_text, timeout=10):
             return True
     return False
 
-try:
-    driver.get(BASE_URL)
-    time.sleep(2)
+# =========================
+# MAIN
+# =========================
+
+def main():
+    driver = build_headless_driver()
+    wait = WebDriverWait(driver, 30)
 
     try:
-        clicar_elemento("button.ot-close-icon")
-    except:
-        pass
-
-    clicar_elemento("a.seletor-loja")
-    time.sleep(1)
-
-    for estado, loja in LOJAS_ESTADOS.items():
-        print(f" Processando: {estado} - {loja}")
-
-        estado_select = aguardar_elemento("select.estado")
-        Select(estado_select).select_by_visible_text(estado)
-        time.sleep(1)
-
-        # CHANGE: se o site exibir seletor de região para o estado, seleciona antes de escolher a loja
-        if estado in REGIAO_POR_ESTADO:
-            try:
-                regiao_select_element = aguardar_elemento("select.regiao", timeout=15)
-                Select(regiao_select_element).select_by_visible_text(REGIAO_POR_ESTADO[estado])
-                # Espera as lojas da região carregarem
-                aguardar_elemento("select.loja option[value]", timeout=20)
-                time.sleep(0.5)
-            except Exception as e:
-                print(f" Não foi possível selecionar a região para {estado}: {e}")
-
-        # CHANGE: espera corretamente o select.loja (um único elemento) e depois seleciona pelo NOME DA LOJA
-        loja_select = aguardar_elemento("select.loja", timeout=20)
-        # Tenta seleção exata; se falhar, usa "contains"
-        try:
-            Select(loja_select).select_by_visible_text(loja)
-        except:
-            ok = select_by_visible_text_contains(loja_select, loja)
-            if not ok:
-                raise RuntimeError(f"Não encontrei a loja '{loja}' no estado {estado}")
-
-        time.sleep(0.8)
-
-        clicar_elemento("button.confirmar")
-        time.sleep(1)
-
-        aguardar_elemento("div.ofertas-slider", timeout=30)
-        data_nome = encontrar_data()
-
-        nome_loja = loja.replace(' ', '_').replace('(', '').replace(')', '')
-        download_dir = desktop_path / f"encartes_{nome_loja}_{data_nome}"
-        os.makedirs(download_dir, exist_ok=True)
-
-        scroll_down_and_up()
-        baixar_encartes(1, download_dir)
-
-        for i in range(2, 4):
-            try:
-                clicar_elemento(f"//button[contains(., 'Jornal de Ofertas {i}')]", By.XPATH)
-                time.sleep(3)
-                aguardar_elemento("div.ofertas-slider", timeout=30)
-                scroll_down_and_up()
-                baixar_encartes(i, download_dir)
-            except Exception as e:
-                print(f" Jornal {i} indisponível para {loja}: {str(e)}")
-
-        clicar_elemento("a.seletor-loja")
+        driver.get(BASE_URL)
         time.sleep(2)
 
-    print("Todos os encartes foram processados!")
+        # Fecha eventual popup de cookies
+        try:
+            clicar_elemento(driver, "button.ot-close-icon")
+        except Exception:
+            pass
 
-except Exception as e:
-    print(f"Erro crítico: {str(e)}")
-    driver.save_screenshot(str(desktop_path / "erro_encartes.png"))
+        clicar_elemento(driver, "a.seletor-loja")
+        time.sleep(1)
 
-finally:
-    driver.quit()
+        for estado, loja in LOJAS_ESTADOS.items():
+            print(f" Processando: {estado} - {loja}")
+
+            estado_select = aguardar_elemento(driver, "select.estado")
+            Select(estado_select).select_by_visible_text(estado)
+            time.sleep(1)
+
+            # Se houver seletor de região para o estado, seleciona
+            if estado in REGIAO_POR_ESTADO:
+                try:
+                    regiao_select_element = aguardar_elemento(driver, "select.regiao", timeout=15)
+                    Select(regiao_select_element).select_by_visible_text(REGIAO_POR_ESTADO[estado])
+                    aguardar_elemento(driver, "select.loja option[value]", timeout=20)
+                    time.sleep(0.5)
+                except Exception as e:
+                    print(f" Não foi possível selecionar a região para {estado}: {e}")
+
+            # Seleciona a loja (exato ou contém)
+            loja_select = aguardar_elemento(driver, "select.loja", timeout=20)
+            try:
+                Select(loja_select).select_by_visible_text(loja)
+            except Exception:
+                ok = select_by_visible_text_contains(driver, loja_select, loja)
+                if not ok:
+                    raise RuntimeError(f"Não encontrei a loja '{loja}' no estado {estado}")
+
+            time.sleep(0.8)
+
+            clicar_elemento(driver, "button.confirmar")
+            time.sleep(1)
+
+            aguardar_elemento(driver, "div.ofertas-slider", timeout=30)
+            data_nome = encontrar_data(driver)
+
+            nome_loja = loja.replace(' ', '_').replace('(', '').replace(')', '')
+            download_dir = OUTPUT_DIR / f"ASSAI_encartes_{nome_loja}_{data_nome}"
+            download_dir.mkdir(parents=True, exist_ok=True)
+
+            # Jornal 1
+            scroll_down_and_up(driver)
+            baixar_encartes(driver, wait, 1, download_dir)
+
+            # Tenta Jornal 2 e 3
+            for i in range(2, 4):
+                try:
+                    clicar_elemento(driver, f"//button[contains(., 'Jornal de Ofertas {i}')]", By.XPATH)
+                    time.sleep(3)
+                    aguardar_elemento(driver, "div.ofertas-slider", timeout=30)
+                    scroll_down_and_up(driver)
+                    baixar_encartes(driver, wait, i, download_dir)
+                except Exception as e:
+                    print(f" Jornal {i} indisponível para {loja}: {str(e)}")
+
+            # Volta para o seletor de loja para próximo estado
+            clicar_elemento(driver, "a.seletor-loja")
+            time.sleep(2)
+
+        print("Todos os encartes foram processados!")
+
+    except Exception as e:
+        print(f"Erro crítico: {str(e)}")
+        # Salva screenshot de erro dentro do OUTPUT_DIR (para ir como artefato)
+        try:
+            err_shot = OUTPUT_DIR / "erro_encartes_assai.png"
+            driver.save_screenshot(str(err_shot))
+            print(f"Screenshot de erro salvo em: {err_shot}")
+        except Exception as se:
+            print(f"Falha ao salvar screenshot: {se}")
+
+        # também salva um log simples
+        try:
+            (OUTPUT_DIR / "erro_encartes_assai.log").write_text(f"{datetime.now()}: {e}\n", encoding="utf-8")
+        except Exception:
+            pass
+        # Retorna código de erro para o job acusar falha (opcional; se preferir continuar, comente)
+        # sys.exit(1)
+
+    finally:
+        try:
+            driver.quit()
+        except Exception:
+            pass
+
+if __name__ == "__main__":
+    main()
