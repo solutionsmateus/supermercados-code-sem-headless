@@ -87,7 +87,7 @@ def aguardar_elemento(driver: webdriver.Chrome, seletor, by=By.CSS_SELECTOR, tim
     return WebDriverWait(driver, timeout).until(EC.presence_of_element_located((by, seletor)))
 
 def clicar_elemento(driver: webdriver.Chrome, seletor, by=By.CSS_SELECTOR):
-    element = WebDriverWait(driver, 30).until(EC.element_to_be_clickable((by, seletor)))
+    element = WebDriverWait(driver, 45).until(EC.element_to_be_clickable((by, seletor)))
     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
     time.sleep(0.5)
     element.click()
@@ -160,7 +160,7 @@ def select_by_visible_text_contains(driver: webdriver.Chrome, select_el, target_
 
 def main():
     driver = build_headless_driver()
-    wait = WebDriverWait(driver, 30)
+    wait = WebDriverWait(driver, 45)
 
     try:
         driver.get(BASE_URL)
@@ -206,7 +206,7 @@ def main():
             clicar_elemento(driver, "button.confirmar")
             time.sleep(1)
 
-            aguardar_elemento(driver, "div.ofertas-slider", timeout=30)
+            aguardar_elemento(driver, "div.ofertas-slider", timeout=45)
             data_nome = encontrar_data(driver)
 
             nome_loja = loja.replace(' ', '_').replace('(', '').replace(')', '')
@@ -222,7 +222,7 @@ def main():
                 try:
                     clicar_elemento(driver, f"//button[contains(., 'Jornal de Ofertas {i}')]", By.XPATH)
                     time.sleep(3)
-                    aguardar_elemento(driver, "div.ofertas-slider", timeout=30)
+                    aguardar_elemento(driver, "div.ofertas-slider", timeout=45)
                     scroll_down_and_up(driver)
                     baixar_encartes(driver, wait, i, download_dir)
                 except Exception as e:
