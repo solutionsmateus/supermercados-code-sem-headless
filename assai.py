@@ -24,7 +24,7 @@ LOJAS_ESTADOS = {
 
 # CHANGE: Região preferida por estado (usado quando existe select.regiao)
 REGIAO_POR_ESTADO = {
-    "Bahia": "Interior",  # CHANGE: explicitamos a região para BA
+    "Bahia": "Interior",
 }
 
 BASE_URL = "https://www.assai.com.br/ofertas"
@@ -172,7 +172,7 @@ try:
         scroll_down_and_up()
         baixar_encartes(1, download_dir)
 
-        for i in range(2, 4):
+        for i in range(2, 6):
             try:
                 clicar_elemento(f"//button[contains(., 'Jornal de Ofertas {i}')]", By.XPATH)
                 time.sleep(3)

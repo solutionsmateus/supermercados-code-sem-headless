@@ -24,7 +24,8 @@ options.add_experimental_option("prefs", prefs)
 
 sigla_estado = {
     "AL",
-    "SE"
+    "SE",
+    'BA'
 }
 
 driver = webdriver.Chrome(options=options)
@@ -90,5 +91,6 @@ def baixar_estado(sigla_estado):
 
 baixar_estado("AL")
 baixar_estado("SE")
+baixar_estado("BA")
 
 driver.quit()
