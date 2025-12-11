@@ -48,25 +48,24 @@ def baixar_estado(sigla_estado):
     index = 1
     while True:
         try:
-            encartes = driver.find_elements(By.XPATH, '//div[contains(@class, "df-book-cover")]')
-            if index >= len(encartes):
-                break
-
+            encartes = driver.find_elements(By.XPATH, '//div[contains(@class, "df-book-wrapper")]')
             print(f"\n Abrindo encarte {index+1}...")
-            encartes[index].click()
+            encartes.click()
             time.sleep(2)
 
             menu_btn = wait.until(EC.element_to_be_clickable(
-                (By.XPATH, '//div[contains(@class, "df-ui-btn df-ui-more")]')))
+                (By.XPATH, '//div[contains(@class, "encarte-button")]')))
             menu_btn.click()
             time.sleep(2)
-
-            download_btn = wait.until(EC.element_to_be_clickable(
-                (By.XPATH, '//a[contains(@class, "df-ui-download")]')))
-            download_btn.click()
-            print(" Download iniciado.")
-            time.sleep(5)
-
+            
+            #New function to screenshoot flyer
+            
+            screenshot_page = wait.until(driver.find_element(By.XPATH, 'df-page-content df-content-loaded'))
+            driver.get_screenshot_as_png(screenshot_page)
+            driver.save_screenshot(ENCARTE_DIR)
+            
+            #Termino da nova função
+            
             driver.get(BASE_URL)
             time.sleep(5)
 
