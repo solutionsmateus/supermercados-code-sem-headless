@@ -9,23 +9,31 @@ from datetime import datetime
 import re
 import os
 
-# CHANGE: Ajuste do mapeamento da Bahia para o NOME DA LOJA (e não a região)
-LOJAS_ESTADOS = {
-    "Maranhão": "Assaí Angelim",
-    "Alagoas": "Assaí Maceió Farol",
-    "Ceará": "Assaí Bezerra M (Fortaleza)",
-    "Pará": "Assaí Belém",
-    "Paraíba": "Assaí João Pessoa Geisel",
-    "Pernambuco": "Assaí Avenida Recife",
-    "Piauí": "Assaí Teresina",
-    "Sergipe": "Assaí Aracaju",
-    "Bahia": "Assaí Vitória da Conquista",  # CHANGE
-}
 
-# CHANGE: Região preferida por estado (usado quando existe select.regiao)
-REGIAO_POR_ESTADO = {
-    "Bahia": "Interior",
-}
+LOJAS_PARA_PROCESSAR = [
+    # Maranhão
+    {"estado": "Maranhão", "loja": "Assaí Angelim", "regiao": None},
+    # Alagoas
+    {"estado": "Alagoas", "loja": "Assaí Maceió Farol", "regiao": None},
+    # Ceará
+    {"estado": "Ceará", "loja": "Assaí Bezerra M (Fortaleza)", "regiao": None},
+    # Pará
+    {"estado": "Pará", "loja": "Assaí Belém", "regiao": None},
+    # Paraíba
+    {"estado": "Paraíba", "loja": "Assaí João Pessoa Geisel", "regiao": None},
+    # Pernambuco
+    {"estado": "Pernambuco", "loja": "Assaí Avenida Recife", "regiao": None},
+    # Piauí
+    {"estado": "Piauí", "loja": "Assaí Teresina", "regiao": None},
+    # Sergipe
+    {"estado": "Sergipe", "loja": "Assaí Aracaju", "regiao": None},
+    
+    # BAHIA - Interior
+    {"estado": "Bahia", "loja": "Assaí Vitória da Conquista", "regiao": "Interior"},
+    
+    # BAHIA - Capital (Adicionada Salvador Paralela)
+    {"estado": "Bahia", "loja": "Salvador Paralela", "regiao": "Capital"},
+]
 
 BASE_URL = "https://www.assai.com.br/ofertas"
 desktop_path = Path.home() / "Desktop/Encartes-Concorrentes/Assai"
@@ -69,7 +77,7 @@ def baixar_encartes(jornal_num, download_dir):
     page_num = 1
     downloaded_urls = set()
     while True:
-        print(f"  Baixando página {page_num} do jornal {jornal_num}...")
+        print(f"  Baixando página {page_num} do jornal {jornal_num}...")
         links_download = wait.until(
             EC.presence_of_all_elements_located(
                 (By.XPATH, "//a[contains(@class, 'download') and contains(@href, '.jpeg')]")
@@ -88,10 +96,11 @@ def baixar_encartes(jornal_num, download_dir):
         for idx, url in enumerate(current_page_urls, start=1):
             response = requests.get(url)
             if response.status_code == 200:
+                # Usa a página do jornal e o índice da página atual para nomear o arquivo
                 file_path = download_dir / f"encarte_jornal_{jornal_num}_pagina_{page_num}_{idx}_{int(time.time())}.jpg"
                 with open(file_path, "wb") as f:
                     f.write(response.content)
-                print(f"  Encarte {file_path.name} salvo.")
+                print(f"  Encarte {file_path.name} salvo.")
             else:
                 print(f"Falha no download: {url} (Status: {response.status_code})")
 
@@ -105,7 +114,6 @@ def baixar_encartes(jornal_num, download_dir):
         except:
             break
 
-# CHANGE: helper para selecionar por "contém texto" (robusto contra variações de acento/espaço)
 def select_by_visible_text_contains(select_el, target_text, timeout=10):
     WebDriverWait(driver, timeout).until(lambda d: len(select_el.find_elements(By.TAG_NAME, "option")) > 0)
     sel = Select(select_el)
@@ -117,6 +125,7 @@ def select_by_visible_text_contains(select_el, target_text, timeout=10):
             return True
     return False
 
+# --- Lógica Principal (Ajustada para iterar sobre a nova lista) ---
 try:
     driver.get(BASE_URL)
     time.sleep(2)
@@ -129,27 +138,35 @@ try:
     clicar_elemento("a.seletor-loja")
     time.sleep(1)
 
-    for estado, loja in LOJAS_ESTADOS.items():
-        print(f" Processando: {estado} - {loja}")
+    # Iterar sobre a nova lista de dicionários
+    for item in LOJAS_PARA_PROCESSAR:
+        estado = item["estado"]
+        loja = item["loja"]
+        regiao = item["regiao"]
+        
+        print(f"\n--- Processando: {estado} - {loja} (Região: {regiao or 'N/A'}) ---")
 
+        # 1. Selecionar Estado
         estado_select = aguardar_elemento("select.estado")
         Select(estado_select).select_by_visible_text(estado)
         time.sleep(1)
 
-        # CHANGE: se o site exibir seletor de região para o estado, seleciona antes de escolher a loja
-        if estado in REGIAO_POR_ESTADO:
+        # 2. Selecionar Região (se aplicável)
+        if regiao:
             try:
+                # O seletor de região deve aparecer se o estado o exigir (ex: Bahia)
                 regiao_select_element = aguardar_elemento("select.regiao", timeout=15)
-                Select(regiao_select_element).select_by_visible_text(REGIAO_POR_ESTADO[estado])
+                Select(regiao_select_element).select_by_visible_text(regiao)
                 # Espera as lojas da região carregarem
                 aguardar_elemento("select.loja option[value]", timeout=20)
                 time.sleep(0.5)
             except Exception as e:
-                print(f" Não foi possível selecionar a região para {estado}: {e}")
+                # Loga o erro, mas continua, caso a região não seja realmente um select
+                print(f" Não foi possível selecionar a região '{regiao}' para {estado}. Tentando continuar...")
 
-        # CHANGE: espera corretamente o select.loja (um único elemento) e depois seleciona pelo NOME DA LOJA
+        # 3. Selecionar Loja
         loja_select = aguardar_elemento("select.loja", timeout=20)
-        # Tenta seleção exata; se falhar, usa "contains"
+        # Tenta seleção exata; se falhar, usa "contains" (mais robusto)
         try:
             Select(loja_select).select_by_visible_text(loja)
         except:
@@ -159,9 +176,11 @@ try:
 
         time.sleep(0.8)
 
+        # 4. Confirmar Seleção
         clicar_elemento("button.confirmar")
         time.sleep(1)
 
+        # 5. Processar Encartes
         aguardar_elemento("div.ofertas-slider", timeout=30)
         data_nome = encontrar_data()
 
@@ -169,9 +188,11 @@ try:
         download_dir = desktop_path / f"encartes_{nome_loja}_{data_nome}"
         os.makedirs(download_dir, exist_ok=True)
 
+        # Baixa o primeiro jornal
         scroll_down_and_up()
         baixar_encartes(1, download_dir)
 
+        # Baixa os jornais subsequentes
         for i in range(2, 6):
             try:
                 clicar_elemento(f"//button[contains(., 'Jornal de Ofertas {i}')]", By.XPATH)
@@ -180,17 +201,17 @@ try:
                 scroll_down_and_up()
                 baixar_encartes(i, download_dir)
             except Exception as e:
-                print(f" Jornal {i} indisponível para {loja}: {str(e)}")
-
+                print(f" Jornal {i} indisponível para {loja}. Tentando próximo.")
+        
+        # 6. Voltar para o Seletor de Loja para a próxima iteração
         clicar_elemento("a.seletor-loja")
         time.sleep(2)
 
-    print("Todos os encartes foram processados!")
+    print("\nTodos os encartes foram processados!")
 
 except Exception as e:
-    print(f"Erro crítico: {str(e)}")
+    print(f"\nErro crítico: {str(e)}")
     driver.save_screenshot(str(desktop_path / "erro_encartes.png"))
 
 finally:
     driver.quit()
-#add

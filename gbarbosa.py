@@ -1,95 +1,117 @@
 import os
 import re
 import time
-import requests
 from pathlib import Path
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait, Select
+from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-
 
 BASE_URL = "https://blog.gbarbosa.com.br/ofertas/"
 ENCARTE_DIR = Path.home() / "Desktop/Encartes-Concorrentes/G-Barbosa"
 
+os.makedirs(ENCARTE_DIR, exist_ok=True)
+
+estados_para_baixar = ["AL", "SE", "BA"]
+
+MAX_PAGES_TO_SCROLL = 15  
+SCROLL_PAUSE_TIME = 3    
+
 options = webdriver.ChromeOptions()
 options.add_argument("--start-maximized")
-prefs = {
-    "download.prompt_for_download": False,
-    "download.default_directory": str(ENCARTE_DIR),
-    "directory_upgrade": True,
-    "safebrowsing.enabled": True
-}
-options.add_experimental_option("prefs", prefs)
 
-sigla_estado = {
-    "AL",
-    "SE",
-    'BA'
-}
 
 driver = webdriver.Chrome(options=options)
-wait = WebDriverWait(driver, 20)
+wait = WebDriverWait(driver, 30) # Tempo de espera
+
+
+def capturar_encarte(driver: webdriver.Chrome, state_sigla: str, page_number: int):
+    FLIPBOOK_CONTENT_XPATH = '//div[contains(@class, "df-page-content") and contains(@class, "df-content-loaded")]'
+    
+    try:
+        page_elements = wait.until(
+            EC.presence_of_all_elements_located((By.XPATH, FLIPBOOK_CONTENT_XPATH))
+        )
+        
+        target_index = page_number - 1
+        
+        if page_number <= len(page_elements):
+            page_element = page_elements[target_index]
+            
+            print(f"   -- Movendo o elemento da página {page_number} para visualização...")
+            driver.execute_script("arguments[0].scrollIntoView(true);", page_element)
+            time.sleep(1) 
+            
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            file_name = f"GBarbosa_{state_sigla}_Pag{page_number}_{timestamp}.png"
+            output_path = ENCARTE_DIR / file_name
+            
+            page_element.screenshot(str(output_path))
+            print(f"Screenshot da página {page_number} do estado {state_sigla} salvo.")
+            return True
+        else:
+             print(f"⚠️ Aviso: Elemento da página {page_number} não encontrado na lista (apenas {len(page_elements)} detectados).")
+             return False
+
+    except Exception as e:
+        print(f" Erro ao tirar screenshot da página {page_number} ({state_sigla}): {e}")
+        return False
 
 
 def baixar_estado(sigla_estado):
-    print(f"\n Baixando encartes do estado: {sigla_estado}")
+    print(f"\n--- Iniciando Baixando encartes do estado: {sigla_estado} ---")
     driver.get(BASE_URL)
-    time.sleep(5)
+    time.sleep(3)
 
     try:
-        botao_estado = wait.until(EC.element_to_be_clickable((By.XPATH, f'//button[text()="{sigla_estado}"]')))
+        print(f"1. Clicando no botão do estado: {sigla_estado}")
+        botao_estado = wait.until(EC.element_to_be_clickable(
+            (By.XPATH, f'//button[text()="{sigla_estado}"]'))
+        )
         botao_estado.click()
-        time.sleep(5)
-    except Exception as e:
-        print(f"Erro ao selecionar o estado {sigla_estado}: {e}")
-        return
+        time.sleep(5) 
 
-    index = 1
-    while True:
-        try:
-            encartes = driver.find_elements(By.XPATH, '//div[contains(@class, "df-book-wrapper")]')
-            print(f"\n Abrindo encarte {index+1}...")
-            encartes.click()
-            time.sleep(2)
+        print("2. Buscando e clicando no botão 'Ver Encarte'...")
+        
+        ver_encarte_btn = wait.until(EC.element_to_be_clickable(
+            (By.XPATH, '//button[@class="encarte-button" and text()="Ver Encarte"]')
+        ))
+        ver_encarte_btn.click()
+        time.sleep(7) 
 
-            menu_btn = wait.until(EC.element_to_be_clickable(
-                (By.XPATH, '//div[contains(@class, "encarte-button")]')))
-            menu_btn.click()
-            time.sleep(2)
+        print(f"3. Iniciando scroll e captura (máx. {MAX_PAGES_TO_SCROLL} páginas)...")
+        
+        SCROLL_CONTAINER_XPATH = '//body' 
+
+        scroll_container = wait.until(
+            EC.presence_of_element_located((By.XPATH, SCROLL_CONTAINER_XPATH))
+        )
+        
+        for page_num in range(1, MAX_PAGES_TO_SCROLL + 1):
             
-            #New function to screenshoot flyer
+            captured = capturar_encarte(driver, sigla_estado, page_number=page_num)
             
-            screenshot_page = wait.until(driver.find_element(By.XPATH, 'df-page-content df-content-loaded'))
-            driver.get_screenshot_as_png(screenshot_page)
-            driver.save_screenshot(ENCARTE_DIR)
-            
-            #Termino da nova função
-            
-            driver.get(BASE_URL)
-            time.sleep(5)
-
-            botao_estado = wait.until(EC.element_to_be_clickable((By.XPATH, f'//button[text()="{sigla_estado}"]')))
-            botao_estado.click()
-            time.sleep(5)
-
-            index += 1
-
-        except Exception as e:
-            print(f" Erro no encarte {index+1}: {e}")
-            driver.get(BASE_URL)
-            time.sleep(5)
-            try:
-                botao_estado = wait.until(EC.element_to_be_clickable((By.XPATH, f'//button[text()="{sigla_estado}"]')))
-                botao_estado.click()
-                time.sleep(5)
-            except:
+            if not captured and page_num > 1:
+                print("Fim do encarte detectado ou erro de carregamento. Parando a captura.")
                 break
-            index += 1
-            continue
 
-baixar_estado("AL")
-baixar_estado("SE")
-baixar_estado("BA")
+            if page_num < MAX_PAGES_TO_SCROLL:
+                print(f"   -- Rolando a página para carregar a próxima seção do encarte...")
+                
+                driver.execute_script("window.scrollBy(0, window.innerHeight);")
 
-driver.quit()
+                time.sleep(SCROLL_PAUSE_TIME) 
+
+    except Exception as e:
+        print(f"Erro fatal durante a extração do estado {sigla_estado}: {e}")
+    finally:
+        driver.get(BASE_URL)
+        time.sleep(3)
+
+
+if __name__ == "__main__":
+    for estado in estados_para_baixar:
+        baixar_estado(estado)
+
+    driver.quit()
+    print("\nProcesso de captura de encartes do GBarbosa concluído.")
