@@ -47,7 +47,7 @@ def processar_encartes():
             pasta_encarte.mkdir(parents=True, exist_ok=True)
 
             pagina = 1
-            max_paginas = 20  # Limite máximo de páginas para evitar loops infinitos
+            max_paginas = 3  # Limite máximo de páginas para evitar loops infinitos
             paginas_salvas = set()  # Para rastrear páginas já salvas
             
             while pagina <= max_paginas:
