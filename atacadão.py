@@ -9,17 +9,20 @@ from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 
 
+# Novo formato: {UF: [(Cidade, Nome da Loja), ...]}
 LOJAS_ESTADOS = {
-    "MA": ("São Luís", "São Luís"),
-    "BA": ("Salvador", "Salvador Garibaldi"),
-    "AL": ("Maceió", "Maceió Praia"),
-    "CE": ("Fortaleza", "Fortaleza Fátima"),
-    "PA": ("Belém", "Belém Portal da Amazônia"),
-    "PB": ("João Pessoa", "João Pessoa Bessa"),
-    "PE": ("Recife", "Recife Avenida Recife"),
-    "PI": ("Teresina", "Teresina Primavera"),
-    "SE": ("Aracaju", "Aracaju Tancredo Neves"),
-    "BA": ("Vitória Da Conquista", "Vitória da Conquista")
+    "MA": [("São Luís", "São Luís")],
+    "BA": [
+        ("Salvador", "Salvador Garibaldi"),
+        ("Vitória Da Conquista", "Vitória da Conquista Brumado")
+    ],
+    "AL": [("Maceió", "Maceió Praia")],
+    "CE": [("Fortaleza", "Fortaleza Fátima")],
+    "PA": [("Belém", "Belém Portal da Amazônia")],
+    "PB": [("João Pessoa", "João Pessoa Bessa")],
+    "PE": [("Recife", "Recife Avenida Recife")],
+    "PI": [("Teresina", "Teresina Primavera")],
+    "SE": [("Aracaju", "Aracaju Tancredo Neves")]
 }
 
 BASE_URL = "https://www.atacadao.com.br/institucional/nossas-lojas"
@@ -56,10 +59,11 @@ def clicar_confirmar():
     
 
 def selecionar_uf_cidade(uf, cidade):
+    # O tempo de espera foi aumentado para garantir que os selects carreguem
     Select(wait.until(EC.presence_of_element_located((By.XPATH, "//select[contains(@class, 'md:w-[96px]')]")))).select_by_value(uf)
-    time.sleep(1)
+    time.sleep(2) # Espera um pouco mais
     Select(wait.until(EC.presence_of_element_located((By.XPATH, "//select[contains(@class, 'md:w-[360px]')]")))).select_by_visible_text(cidade)
-    time.sleep(1)
+    time.sleep(2) # Espera um pouco mais
 
 def clicar_loja_por_nome(loja_nome):
     wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "[data-testid='store-card']")))
@@ -72,7 +76,8 @@ def clicar_loja_por_nome(loja_nome):
                 print(f"Acessando loja: {titulo}")
                 botao.click()
                 return titulo
-        except:
+        except Exception as e:
+            # print(f"Erro ao processar card de loja: {e}")
             continue
     print(f" Loja '{loja_nome}' não encontrada.")
     return None
@@ -89,6 +94,7 @@ def baixar_encartes(uf, cidade, loja_nome):
             return
 
       
+        # Garante nome de pasta seguro para o sistema de arquivos
         loja_segura = re.sub(r'[\\/*?:"<>|,\n\r]+', "_", loja_nome).strip().replace(" ", "_")
         pasta_destino = ENCARTE_DIR / uf / cidade / loja_segura
         pasta_destino.mkdir(parents=True, exist_ok=True)
@@ -115,18 +121,21 @@ try:
     driver.get(BASE_URL)
     clicar_confirmar()
 
-    for uf, (cidade, loja_nome) in LOJAS_ESTADOS.items():
-        print(f"\n Estado: {uf} | Cidade: {cidade} | Loja: {loja_nome}")
-        driver.get(BASE_URL)
-        time.sleep(2)
-        clicar_confirmar()
+    # Loop para iterar sobre o novo formato
+    for uf, lojas in LOJAS_ESTADOS.items():
+        for cidade, loja_nome in lojas:
+            print(f"\n Estado: {uf} | Cidade: {cidade} | Loja: {loja_nome}")
+            # Recarrega a página base para garantir que os selects sejam redefinidos
+            driver.get(BASE_URL)
+            time.sleep(2)
+            clicar_confirmar()
 
-        selecionar_uf_cidade(uf, cidade)
-        nome_loja_encontrada = clicar_loja_por_nome(loja_nome)
+            selecionar_uf_cidade(uf, cidade)
+            nome_loja_encontrada = clicar_loja_por_nome(loja_nome)
 
-        if nome_loja_encontrada:
-            baixar_encartes(uf, cidade, nome_loja_encontrada)
-            time.sleep(1)
+            if nome_loja_encontrada:
+                baixar_encartes(uf, cidade, nome_loja_encontrada)
+                time.sleep(1)
 
 except Exception as e:
     print(f" Erro geral: {e}")

@@ -50,7 +50,7 @@ def capturar_encarte(driver: webdriver.Chrome, state_sigla: str, page_number: in
             print(f"Screenshot da página {page_number} do estado {state_sigla} salvo.")
             return True
         else:
-             print(f"⚠️ Aviso: Elemento da página {page_number} não encontrado na lista (apenas {len(page_elements)} detectados).")
+             print(f"Aviso: Elemento da página {page_number} não encontrado na lista (apenas {len(page_elements)} detectados).")
              return False
 
     except Exception as e:
